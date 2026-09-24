@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from app.repositories.base import Repository, row_dict, rows_dict
@@ -68,6 +67,14 @@ class ResidentRepository(Repository):
     def dependency_counts(self, resident_id: int) -> dict[str, int]:
         affairs = int(self.connection.execute("SELECT COUNT(*) FROM affairs WHERE applicant_id=?", (resident_id,)).fetchone()[0])
         return {"affairs": affairs}
+
+    def affair_references(self, resident_id: int) -> list[dict[str, Any]]:
+        """引用该居民的政务事务明细，是关联判断、接口冲突与审计记录的唯一数据来源。"""
+        return rows_dict(self.connection.execute(
+            "SELECT id,title,category,status,created_at FROM affairs "
+            "WHERE applicant_id=? ORDER BY id",
+            (resident_id,),
+        ).fetchall())
 
 
 class PetitionRepository(Repository):

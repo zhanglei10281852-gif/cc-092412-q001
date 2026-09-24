@@ -1,6 +1,7 @@
+import sqlite3
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
-from app.database import get_connection
+from app.database import get_connection, transaction
 from app.models import AffairCreate, AffairProcess, AffairStatus
 
 router = APIRouter(prefix="/affairs", tags=["事务办理"])
@@ -8,19 +9,25 @@ router = APIRouter(prefix="/affairs", tags=["事务办理"])
 
 @router.post("", status_code=201)
 def create_affair(affair: AffairCreate):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM residents WHERE id = ?", (affair.applicant_id,))
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="申请人不存在")
+    # IMMEDIATE 写锁把"申请人存在性校验 + 事务插入"合并为一个原子事务，
+    # 与居民删除的写事务互斥：申请人在校验后被删除的并发窗口不再存在。
+    try:
+        with transaction(immediate=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM residents WHERE id = ?", (affair.applicant_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="申请人不存在")
 
-    cursor.execute(
-        """INSERT INTO affairs (title, category, applicant_id, description)
-           VALUES (?, ?, ?, ?)""",
-        (affair.title, affair.category.value, affair.applicant_id, affair.description)
-    )
-    conn.commit()
-    return {"id": cursor.lastrowid, "message": "事务提交成功"}
+            cursor.execute(
+                """INSERT INTO affairs (title, category, applicant_id, description)
+                   VALUES (?, ?, ?, ?)""",
+                (affair.title, affair.category.value, affair.applicant_id, affair.description)
+            )
+            return {"id": cursor.lastrowid, "message": "事务提交成功"}
+    except sqlite3.IntegrityError:
+        # 兜底：极端并发下申请人在写锁获取瞬间已被删除，外键约束拒绝插入，
+        # 统一返回确定的业务 404，而非把数据库错误泄漏成 500。
+        raise HTTPException(status_code=404, detail="申请人不存在")
 
 
 @router.get("")

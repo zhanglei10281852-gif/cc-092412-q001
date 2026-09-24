@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
-from app.database import get_connection
+from app.core.errors import ConflictError
+from app.database import get_connection, transaction
 from app.models import ResidentCreate, ResidentUpdate
+from app.services.residents import WINDOW_ACTOR, ResidentService
 
 router = APIRouter(prefix="/residents", tags=["居民管理"])
 
@@ -102,10 +104,14 @@ def update_resident(resident_id: int, data: ResidentUpdate):
 
 @router.delete("/{resident_id}")
 def delete_resident(resident_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM residents WHERE id = ?", (resident_id,))
-    conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="居民不存在")
-    return {"message": "删除成功"}
+    connection = get_connection()
+    service = ResidentService(connection)
+    try:
+        # IMMEDIATE 立即获取写锁，串行化删除与"新增事务"，消除检查后被插入引用的并发窗口。
+        with transaction(immediate=True):
+            return service.delete(WINDOW_ACTOR, resident_id)
+    except ConflictError as exc:
+        # 业务事务已回滚：居民档案与关联事务均保持完整。冲突上下文随即独立补记审计，
+        # 保证接口错误、关联查询与审计结果三者口径一致。
+        service.record_blocked_delete(WINDOW_ACTOR, resident_id, exc.context)
+        raise
