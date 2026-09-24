@@ -1,7 +1,9 @@
+import sqlite3
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
-from app.database import get_connection
+from app.database import get_connection, transaction
 from app.models import ResidentCreate, ResidentUpdate
+from app.repositories.business import ResidentRepository
 
 router = APIRouter(prefix="/residents", tags=["居民管理"])
 
@@ -102,10 +104,19 @@ def update_resident(resident_id: int, data: ResidentUpdate):
 
 @router.delete("/{resident_id}")
 def delete_resident(resident_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM residents WHERE id = ?", (resident_id,))
-    conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="居民不存在")
+    try:
+        with transaction(immediate=True) as tx:
+            cursor = tx.cursor()
+            cursor.execute("SELECT id FROM residents WHERE id = ?", (resident_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="居民不存在")
+
+            references = ResidentRepository(tx).dependency_counts(resident_id)["affairs"]
+            if references:
+                raise HTTPException(status_code=409, detail=f"该居民存在{references}条关联政务事务，无法删除")
+
+            cursor.execute("DELETE FROM residents WHERE id = ?", (resident_id,))
+    except sqlite3.IntegrityError:
+        # 并发新增事务在检查之后落库，外键约束兜底，仍按业务冲突处理
+        raise HTTPException(status_code=409, detail="该居民存在关联政务事务，无法删除")
     return {"message": "删除成功"}

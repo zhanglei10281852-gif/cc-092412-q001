@@ -1,3 +1,4 @@
+import sqlite3
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from app.database import get_connection
@@ -14,12 +15,16 @@ def create_affair(affair: AffairCreate):
     if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="申请人不存在")
 
-    cursor.execute(
-        """INSERT INTO affairs (title, category, applicant_id, description)
-           VALUES (?, ?, ?, ?)""",
-        (affair.title, affair.category.value, affair.applicant_id, affair.description)
-    )
-    conn.commit()
+    try:
+        cursor.execute(
+            """INSERT INTO affairs (title, category, applicant_id, description)
+               VALUES (?, ?, ?, ?)""",
+            (affair.title, affair.category.value, affair.applicant_id, affair.description)
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # 申请人在检查之后被并发删除，按申请人不存在处理
+        raise HTTPException(status_code=404, detail="申请人不存在")
     return {"id": cursor.lastrowid, "message": "事务提交成功"}
 
 
